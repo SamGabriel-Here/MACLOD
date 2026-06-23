@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "distantlod",
+  "version": "${version}",
+  "name": "Distant LOD",
+  "description": "A Distant Horizons-style far-terrain LOD renderer (learning prototype, macOS-friendly).",
+  "authors": ["Sam"],
+  "contact": {},
+  "license": "MIT",
+  "icon": "assets/distantlod/icon.png",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["com.example.distantlod.DistantLodClient"]
+  },
+  "depends": {
+    "fabricloader": ">=0.15.0",
+    "minecraft": "~1.20.1",
+    "java": ">=17",
+    "fabric-api": "*"
+  }
+}

@@ -1,0 +1,16 @@
+# Gradle / Loom
+.gradle/
+build/
+run/
+remappedSrc/
+.fabric/
+
+# IntelliJ
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# OS
+.DS_Store
