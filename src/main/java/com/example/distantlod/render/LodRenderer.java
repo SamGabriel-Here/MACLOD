@@ -5,11 +5,14 @@ import com.example.distantlod.data.DistantLodStore;
 import com.example.distantlod.data.LodChunkData;
 import com.mojang.blaze3d.systems.RenderSystem;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
+import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.font.TextRenderer;
 import net.minecraft.client.gl.ShaderProgram;
 import net.minecraft.client.gl.VertexBuffer;
+import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.render.BufferBuilder;
 import net.minecraft.client.render.Camera;
 import net.minecraft.client.render.GameRenderer;
@@ -68,12 +71,17 @@ public final class LodRenderer {
 
     private static final Map<Long, CachedChunkMesh> NEAR_MESHES = new ConcurrentHashMap<>();
     private static final Map<Long, CachedChunkMesh> DISTANT_MESHES = new ConcurrentHashMap<>();
+    private static volatile DebugStats lastStats = DebugStats.empty();
 
     private LodRenderer() {}
 
     public static void register() {
         WorldRenderEvents.AFTER_TRANSLUCENT.register(LodRenderer::onAfterTranslucent);
-        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> clearMeshes());
+        HudRenderCallback.EVENT.register(LodRenderer::onHudRender);
+        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
+            clearMeshes();
+            lastStats = DebugStats.empty();
+        });
     }
 
     private static void onAfterTranslucent(WorldRenderContext context) {
@@ -87,7 +95,12 @@ public final class LodRenderer {
         int camChunkZ = MathHelper.floor(cam.z) >> 4;
 
         List<LodChunkData> nearby = collectNearby(camChunkX, camChunkZ);
-        List<LodChunkData> distant = collectDistant(context, camChunkX, camChunkZ);
+        DistantCollectResult distantResult = collectDistant(context, camChunkX, camChunkZ);
+        List<LodChunkData> distant = distantResult.chunks();
+        lastStats = new DebugStats(
+                nearby.size(), distant.size(),
+                NEAR_MESHES.size(), DISTANT_MESHES.size(),
+                distantResult.requestsQueued(), distantResult.radiusChunks(), distantResult.loadedHorizonChunks());
 
         if (nearby.isEmpty() && distant.isEmpty()) {
             pruneMeshes(NEAR_MESHES, Set.of());
@@ -120,6 +133,28 @@ public final class LodRenderer {
         RenderSystem.enableCull();
     }
 
+    private static void onHudRender(DrawContext context, float tickDelta) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.options.hudHidden || client.textRenderer == null) {
+            return;
+        }
+
+        DebugStats stats = lastStats;
+        String line1 = "MACLOD 0.2: near=" + stats.nearChunks()
+                + " far=" + stats.distantChunks()
+                + " queued=" + stats.requestsQueued();
+        String line2 = "meshes near=" + stats.nearMeshes()
+                + " far=" + stats.distantMeshes()
+                + " radius=" + stats.radiusChunks()
+                + " vanilla=" + stats.loadedHorizonChunks();
+
+        TextRenderer text = client.textRenderer;
+        int width = Math.max(text.getWidth(line1), text.getWidth(line2)) + 8;
+        context.fill(4, 4, 8 + width, 28, 0x99000000);
+        context.drawTextWithShadow(text, line1, 8, 7, 0x55FF55);
+        context.drawTextWithShadow(text, line2, 8, 18, 0xAACCFF);
+    }
+
     private static List<LodChunkData> collectNearby(int camChunkX, int camChunkZ) {
         List<LodChunkData> nearby = new ArrayList<>();
         for (LodChunkData data : ChunkLodStore.snapshot().values()) {
@@ -135,15 +170,15 @@ public final class LodRenderer {
      * Collects cached disk-read chunks beyond the loaded horizon and schedules a
      * small number of new async reads each frame. Singleplayer overworld only.
      */
-    private static List<LodChunkData> collectDistant(WorldRenderContext context, int camChunkX, int camChunkZ) {
+    private static DistantCollectResult collectDistant(WorldRenderContext context, int camChunkX, int camChunkZ) {
         ClientWorld world = context.world();
         if (world == null || !World.OVERWORLD.equals(world.getRegistryKey())) {
-            return List.of();
+            return DistantCollectResult.empty();
         }
         MinecraftClient client = MinecraftClient.getInstance();
         MinecraftServer server = client.getServer();
         if (server == null) {
-            return List.of();
+            return DistantCollectResult.empty();
         }
         Path saveRoot = server.getSavePath(WorldSavePath.ROOT);
         int vanillaViewDistance = client.options.getViewDistance().getValue();
@@ -151,7 +186,7 @@ public final class LodRenderer {
         int targetRadiusChunks = Math.max(DISTANT_MIN_RADIUS_CHUNKS, vanillaViewDistance + DISTANT_EXTRA_CHUNKS);
         int distantRadiusChunks = Math.min(targetRadiusChunks, DISTANT_MAX_RADIUS_CHUNKS);
         if (distantRadiusChunks <= loadedHorizonChunks) {
-            return List.of();
+            return new DistantCollectResult(List.of(), 0, distantRadiusChunks, loadedHorizonChunks);
         }
 
         int requestsThisFrame = 0;
@@ -177,7 +212,7 @@ public final class LodRenderer {
                 }
             }
         }
-        return distant;
+        return new DistantCollectResult(distant, requestsThisFrame, distantRadiusChunks, loadedHorizonChunks);
     }
 
     private static void renderMeshes(List<LodChunkData> dataList,
@@ -225,6 +260,19 @@ public final class LodRenderer {
     private static void clearMeshes() {
         pruneMeshes(NEAR_MESHES, Set.of());
         pruneMeshes(DISTANT_MESHES, Set.of());
+    }
+
+    private record DistantCollectResult(List<LodChunkData> chunks, int requestsQueued, int radiusChunks, int loadedHorizonChunks) {
+        static DistantCollectResult empty() {
+            return new DistantCollectResult(List.of(), 0, 0, 0);
+        }
+    }
+
+    private record DebugStats(int nearChunks, int distantChunks, int nearMeshes, int distantMeshes,
+                              int requestsQueued, int radiusChunks, int loadedHorizonChunks) {
+        static DebugStats empty() {
+            return new DebugStats(0, 0, 0, 0, 0, 0, 0);
+        }
     }
 
     private static final class CachedChunkMesh {

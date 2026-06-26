@@ -27,9 +27,11 @@ export JAVA_HOME=$(/usr/libexec/java_home -v 17)
 ./gradlew runClient     # launches a dev Minecraft with the mod loaded
 ```
 
-In-game: open a singleplayer **overworld** world. The near ring (chunks the
-client has actually loaded) renders immediately as a translucent colored
-heightfield floating a few blocks above the real terrain. The distant ring
+In-game: open a singleplayer **overworld** world. A small MACLOD debug HUD in
+the top-left shows near/far chunk counts, mesh counts, queued disk reads, and
+the active vanilla/distant radii. The near ring (chunks the client has actually
+loaded) renders immediately as a translucent colored heightfield floating a few
+blocks above the real terrain. The distant ring
 (read from disk, beyond vanilla's loaded chunks) renders opaque, height-banded
 colors, and fills in asynchronously as background reads complete. Disk read
 requests are throttled each frame so the game does not queue thousands of
