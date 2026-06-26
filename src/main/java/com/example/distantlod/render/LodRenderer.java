@@ -142,7 +142,7 @@ public final class LodRenderer {
         }
 
         DebugStats stats = lastStats;
-        String line1 = "MACLOD 0.2: near=" + stats.nearChunks()
+        String line1 = "MACLOD 0.2.1: near=" + stats.nearChunks()
                 + " far=" + stats.distantChunks()
                 + " queued=" + stats.requestsQueued();
         String line2 = "meshes near=" + stats.nearMeshes()
