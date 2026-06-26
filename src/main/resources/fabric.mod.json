@@ -7,7 +7,6 @@
   "authors": ["Sam"],
   "contact": {},
   "license": "MIT",
-  "icon": "assets/distantlod/icon.png",
   "environment": "client",
   "entrypoints": {
     "client": ["com.example.distantlod.DistantLodClient"]

@@ -1,6 +1,7 @@
 package com.example.distantlod.data;
 
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientChunkEvents;
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.minecraft.util.math.ChunkPos;
 
 import java.util.Map;
@@ -26,6 +27,12 @@ public final class ChunkLodStore {
 
         ClientChunkEvents.CHUNK_UNLOAD.register((world, chunk) ->
                 CHUNKS.remove(ChunkPos.toLong(chunk.getPos().x, chunk.getPos().z)));
+
+        // Chunk unload events don't reliably fire for every chunk when leaving a
+        // world outright, so drop everything explicitly on disconnect to avoid
+        // stale chunk data leaking into the next world (chunk coords are only
+        // unique within one world).
+        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> CHUNKS.clear());
     }
 
     public static Map<Long, LodChunkData> snapshot() {

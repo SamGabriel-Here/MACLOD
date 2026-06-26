@@ -35,9 +35,11 @@ import java.util.List;
 public final class LodRenderer {
 
     /** Cap how many chunk-rings around the camera we draw, to bound vertex count. */
-    private static final int DEBUG_RENDER_RADIUS_CHUNKS = 4;
-    /** Lift the debug mesh above the real terrain so it's visibly distinct. */
-    private static final float DEBUG_HEIGHT_OFFSET = 3.0f;
+    private static final int DEBUG_RENDER_RADIUS_CHUNKS = 3;
+    /** Lift the debug mesh well above eye level so it reads as a distinct overlay, not a wall at head height. */
+    private static final float DEBUG_HEIGHT_OFFSET = 6.0f;
+    /** Translucent so real terrain stays visible underneath. */
+    private static final float DEBUG_ALPHA = 0.55f;
 
     private LodRenderer() {}
 
@@ -71,6 +73,8 @@ public final class LodRenderer {
 
         RenderSystem.enableDepthTest();
         RenderSystem.disableCull();
+        RenderSystem.enableBlend();
+        RenderSystem.defaultBlendFunc();
         RenderSystem.setShaderFogStart(100000.0f);
         RenderSystem.setShaderFogEnd(100000.0f);
         RenderSystem.setShader(GameRenderer::getPositionColorProgram);
@@ -88,6 +92,7 @@ public final class LodRenderer {
 
         RenderSystem.setShaderFogStart(prevFogStart);
         RenderSystem.setShaderFogEnd(prevFogEnd);
+        RenderSystem.disableBlend();
         RenderSystem.enableCull();
     }
 
@@ -110,10 +115,10 @@ public final class LodRenderer {
                 float g = ((packed >> 8) & 0xFF) / 255.0f;
                 float b = (packed & 0xFF) / 255.0f;
 
-                buf.vertex(m, x0, y, z0).color(r, g, b, 1.0f).next();
-                buf.vertex(m, x1, y, z0).color(r, g, b, 1.0f).next();
-                buf.vertex(m, x1, y, z1).color(r, g, b, 1.0f).next();
-                buf.vertex(m, x0, y, z1).color(r, g, b, 1.0f).next();
+                buf.vertex(m, x0, y, z0).color(r, g, b, DEBUG_ALPHA).next();
+                buf.vertex(m, x1, y, z0).color(r, g, b, DEBUG_ALPHA).next();
+                buf.vertex(m, x1, y, z1).color(r, g, b, DEBUG_ALPHA).next();
+                buf.vertex(m, x0, y, z1).color(r, g, b, DEBUG_ALPHA).next();
             }
         }
     }
