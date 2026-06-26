@@ -278,7 +278,12 @@ public final class LodRenderer {
     private static final class CachedChunkMesh {
         private static final Matrix4f IDENTITY = new Matrix4f();
         private static final int BYTES_PER_VERTEX_ESTIMATE = 32;
-        private static final int VERTICES_PER_CHUNK = LodChunkData.SIZE * LodChunkData.SIZE * 4;
+        /** Top faces + one vertical face for each internal E/S height transition + one skirt per boundary column. */
+        private static final int MAX_QUADS_PER_CHUNK = LodChunkData.SIZE * LodChunkData.SIZE
+                + (LodChunkData.SIZE - 1) * LodChunkData.SIZE * 2
+                + LodChunkData.SIZE * 4;
+        private static final int VERTICES_PER_CHUNK = MAX_QUADS_PER_CHUNK * 4;
+        private static final float BOUNDARY_SKIRT_DEPTH = 24.0f;
 
         private final LodChunkData data;
         private final float heightOffset;
@@ -299,26 +304,81 @@ public final class LodRenderer {
             for (int z = 0; z < LodChunkData.SIZE; z++) {
                 for (int x = 0; x < LodChunkData.SIZE; x++) {
                     float y = data.height(x, z) + heightOffset;
-                    float x0 = x;
-                    float x1 = x + 1;
-                    float z0 = z;
-                    float z1 = z + 1;
-
                     int packed = data.color(x, z);
-                    float r = ((packed >> 16) & 0xFF) / 255.0f;
-                    float g = ((packed >> 8) & 0xFF) / 255.0f;
-                    float b = (packed & 0xFF) / 255.0f;
 
-                    buffer.vertex(IDENTITY, x0, y, z0).color(r, g, b, alpha).next();
-                    buffer.vertex(IDENTITY, x1, y, z0).color(r, g, b, alpha).next();
-                    buffer.vertex(IDENTITY, x1, y, z1).color(r, g, b, alpha).next();
-                    buffer.vertex(IDENTITY, x0, y, z1).color(r, g, b, alpha).next();
+                    addTopFace(buffer, x, z, y, packed, alpha);
+
+                    if (x < LodChunkData.SIZE - 1) {
+                        float eastY = data.height(x + 1, z) + heightOffset;
+                        if (Float.compare(y, eastY) != 0) {
+                            addVerticalFaceX(buffer, x + 1, z, Math.min(y, eastY), Math.max(y, eastY), packed, alpha);
+                        }
+                    } else {
+                        addVerticalFaceX(buffer, x + 1, z, y - BOUNDARY_SKIRT_DEPTH, y, packed, alpha);
+                    }
+                    if (x == 0) {
+                        addVerticalFaceX(buffer, x, z, y - BOUNDARY_SKIRT_DEPTH, y, packed, alpha);
+                    }
+
+                    if (z < LodChunkData.SIZE - 1) {
+                        float southY = data.height(x, z + 1) + heightOffset;
+                        if (Float.compare(y, southY) != 0) {
+                            addVerticalFaceZ(buffer, x, z + 1, Math.min(y, southY), Math.max(y, southY), packed, alpha);
+                        }
+                    } else {
+                        addVerticalFaceZ(buffer, x, z + 1, y - BOUNDARY_SKIRT_DEPTH, y, packed, alpha);
+                    }
+                    if (z == 0) {
+                        addVerticalFaceZ(buffer, x, z, y - BOUNDARY_SKIRT_DEPTH, y, packed, alpha);
+                    }
                 }
             }
 
             VertexBuffer vertexBuffer = new VertexBuffer(VertexBuffer.Usage.STATIC);
             vertexBuffer.upload(buffer.end());
             return new CachedChunkMesh(data, heightOffset, alpha, vertexBuffer);
+        }
+
+
+        private static void addTopFace(BufferBuilder buffer, int x, int z, float y, int packed, float alpha) {
+            Color color = Color.fromPacked(packed, 1.0f);
+            float x0 = x;
+            float x1 = x + 1;
+            float z0 = z;
+            float z1 = z + 1;
+            buffer.vertex(IDENTITY, x0, y, z0).color(color.r(), color.g(), color.b(), alpha).next();
+            buffer.vertex(IDENTITY, x1, y, z0).color(color.r(), color.g(), color.b(), alpha).next();
+            buffer.vertex(IDENTITY, x1, y, z1).color(color.r(), color.g(), color.b(), alpha).next();
+            buffer.vertex(IDENTITY, x0, y, z1).color(color.r(), color.g(), color.b(), alpha).next();
+        }
+
+        private static void addVerticalFaceX(BufferBuilder buffer, int x, int z, float y0, float y1, int packed, float alpha) {
+            Color color = Color.fromPacked(packed, 0.62f);
+            float z0 = z;
+            float z1 = z + 1;
+            buffer.vertex(IDENTITY, x, y1, z0).color(color.r(), color.g(), color.b(), alpha).next();
+            buffer.vertex(IDENTITY, x, y1, z1).color(color.r(), color.g(), color.b(), alpha).next();
+            buffer.vertex(IDENTITY, x, y0, z1).color(color.r(), color.g(), color.b(), alpha).next();
+            buffer.vertex(IDENTITY, x, y0, z0).color(color.r(), color.g(), color.b(), alpha).next();
+        }
+
+        private static void addVerticalFaceZ(BufferBuilder buffer, int x, int z, float y0, float y1, int packed, float alpha) {
+            Color color = Color.fromPacked(packed, 0.70f);
+            float x0 = x;
+            float x1 = x + 1;
+            buffer.vertex(IDENTITY, x0, y1, z).color(color.r(), color.g(), color.b(), alpha).next();
+            buffer.vertex(IDENTITY, x1, y1, z).color(color.r(), color.g(), color.b(), alpha).next();
+            buffer.vertex(IDENTITY, x1, y0, z).color(color.r(), color.g(), color.b(), alpha).next();
+            buffer.vertex(IDENTITY, x0, y0, z).color(color.r(), color.g(), color.b(), alpha).next();
+        }
+
+        private record Color(float r, float g, float b) {
+            static Color fromPacked(int packed, float shade) {
+                float r = ((packed >> 16) & 0xFF) / 255.0f * shade;
+                float g = ((packed >> 8) & 0xFF) / 255.0f * shade;
+                float b = (packed & 0xFF) / 255.0f * shade;
+                return new Color(r, g, b);
+            }
         }
 
         boolean matches(LodChunkData otherData, float otherHeightOffset, float otherAlpha) {
