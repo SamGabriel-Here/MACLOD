@@ -32,7 +32,10 @@ public final class ChunkLodStore {
         // world outright, so drop everything explicitly on disconnect to avoid
         // stale chunk data leaking into the next world (chunk coords are only
         // unique within one world).
-        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> CHUNKS.clear());
+        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
+            CHUNKS.clear();
+            DistantLodStore.clear();
+        });
     }
 
     public static Map<Long, LodChunkData> snapshot() {

@@ -1,5 +1,6 @@
 package com.example.distantlod.data;
 
+import com.example.distantlod.DistantLodClient;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.MapColor;
 import net.minecraft.client.world.ClientWorld;
@@ -37,6 +38,10 @@ public final class ChunkLodCapture {
 
                 int idx = z * size + x;
                 heights[idx] = topY;
+                if (topY < world.getBottomY() - 1 || topY > world.getTopY()) {
+                    DistantLodClient.LOGGER.warn("[Distant LOD] near chunk ({}, {}) col ({}, {}) out-of-range height {}",
+                            chunk.getPos().x, chunk.getPos().z, x, z, topY);
+                }
 
                 pos.set(worldX, topY, worldZ);
                 BlockState state = world.getBlockState(pos);

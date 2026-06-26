@@ -4,75 +4,85 @@ A learning prototype of a Distant Horizons–style far-terrain renderer for
 Minecraft, built on **Fabric 1.20.1** and set up to run cleanly on **Apple
 Silicon macOS** (M-series).
 
-This is the Week 1–2 milestone: a working render hook that draws four coloured
-walls ~300 blocks out, far past the normal terrain. If you can see them, your
-rendering pipeline works on macOS and you have a place to hang real LOD
-geometry.
+Current state: it renders a real heightmap mesh built from two sources -
+captured live chunk data for whatever the client has loaded, and chunks read
+**directly off disk** from the singleplayer world save for terrain beyond the
+normal horizon. This is the first disk-backed far-terrain prototype, not just
+a render-pipeline test.
 
 ## Prerequisites (macOS / Apple Silicon)
 
 - **JDK 17, ARM64.** Minecraft 1.20.1 runs on Java 17. Get the native
-  Apple-Silicon build (e.g. Azul Zulu 17 aarch64) so you are not on Rosetta.
-  Verify: `java -version` should mention `17` and `aarch64`.
-- **IntelliJ IDEA** (Community is fine). Easiest path — it downloads the Gradle
-  wrapper and dependencies for you on import.
-
-## First-time setup
-
-This scaffold ships without the Gradle wrapper JAR (it's a binary). Generate it
-once, from the project root:
-
-```bash
-# If you have Gradle installed (brew install gradle):
-gradle wrapper --gradle-version 8.8
-```
-
-…or just **open the folder in IntelliJ IDEA** and let it import the Gradle
-project — it creates the wrapper and pulls everything automatically. No separate
-Gradle install needed in that case.
+  Apple-Silicon build (e.g. Azul Zulu/Temurin 17 aarch64) so you are not on
+  Rosetta. Verify: `java -version` should mention `17` and `aarch64`.
+- A Gradle 8.8 wrapper is already committed (`gradlew`, `gradle/wrapper/`), so
+  no separate Gradle install is required.
 
 ## Build & run
 
 ```bash
-./gradlew genSources    # decompile MC with Yarn names (nice for exploring)
+export JAVA_HOME=$(/usr/libexec/java_home -v 17)
 ./gradlew runClient     # launches a dev Minecraft with the mod loaded
 ```
 
-Create a new world, then look toward each compass direction:
-
-- North → **red** wall
-- South → **green** wall
-- East  → **blue** wall
-- West  → **yellow** wall
-
-Seeing them confirms the render hook, camera-relative math, and far-distance
-draw all work.
+In-game: open a singleplayer **overworld** world. The near ring (chunks the
+client has actually loaded) renders immediately as a translucent colored
+heightfield floating a few blocks above the real terrain. The distant ring
+(read from disk, beyond vanilla's loaded chunks) renders opaque, height-banded
+colors, and fills in asynchronously over a second or two as background reads
+complete. It's easiest to see the distant ring clearly by lowering **Video
+Settings → Render Distance** to ~2-4 chunks first, so vanilla's own horizon is
+small enough to leave a visible gap for the mod to fill.
 
 ## Project layout
 
 ```
 distant-lod/
-├── build.gradle            # Fabric Loom build, Java 17, Yarn mappings
-├── settings.gradle         # Fabric maven for the Loom plugin
-├── gradle.properties       # all version pins live here
+├── build.gradle, settings.gradle, gradle.properties
+├── gradlew, gradle/wrapper/         # committed Gradle 8.8 wrapper
 ├── src/main/
 │   ├── java/com/example/distantlod/
-│   │   ├── DistantLodClient.java     # client entrypoint
-│   │   ├── render/LodRenderer.java   # << the Week 1 render hook
-│   │   └── data/LodChunkData.java    # compact LOD snapshot (Week 3-4 stub)
+│   │   ├── DistantLodClient.java          # client entrypoint
+│   │   ├── render/LodRenderer.java        # renders both near + distant rings
+│   │   └── data/
+│   │       ├── LodChunkData.java          # compact per-chunk LOD snapshot
+│   │       ├── ChunkLodCapture.java       # near: real heightmap+color from a loaded chunk
+│   │       ├── ChunkLodStore.java         # near: cache, kept live via ClientChunkEvents
+│   │       ├── DistantChunkSource.java    # distant: reads .mca region files off disk
+│   │       ├── DistantHeightmapDecoder.java # distant: decodes saved Heightmaps NBT
+│   │       └── DistantLodStore.java       # distant: async cache + background thread pool
 │   └── resources/
 │       ├── fabric.mod.json
-│       └── assets/distantlod/shaders/  # reference GLSL for the custom-shader path
+│       └── assets/distantlod/shaders/     # reference GLSL for a future custom-shader path
 ```
+
+## How the distant ring works
+
+`DistantChunkSource` reuses Minecraft's own `RegionFile`/`NbtIo` classes to
+read a chunk's saved NBT straight from the world's `region/*.mca` files,
+bypassing the normal client/server chunk-loading protocol entirely. This only
+works in **singleplayer** - the integrated server's save folder lives on the
+same machine; there is no filesystem access to a remote server's world.
+
+`DistantHeightmapDecoder` then decodes the chunk's saved `Heightmaps` NBT tag
+(the same packed-long-array format vanilla itself writes) into a per-column
+surface height. It does not yet decode real block colors - that requires
+walking the section block-state palettes, a separate and heavier piece of
+work - so distant terrain is currently tinted by a height-band placeholder
+(blue/green/tan/gray) rather than its real surface block color.
+
+`DistantLodStore` runs those reads on a small background thread pool so disk
+I/O and NBT parsing never stall the render thread, with an epoch guard so
+stale results from a previous world/dimension are discarded after disconnect.
 
 ## Why it runs on macOS
 
 `LodRenderer` draws through Minecraft's own `RenderSystem` and the built-in
-`position_color` core shader. That already targets the OpenGL 3.2+ Core Profile
-Apple's GL requires: VAO-backed, no immediate mode, and `DrawMode.QUADS` is
-triangulated by Minecraft (the driver never sees `GL_QUADS`). When you move to
-your own VAO/VBO + GLSL, keep the same rules — they're enforced strictly on
-macOS:
+`position_color` core shader, which already targets the OpenGL 3.2+ Core
+Profile Apple's GL requires: VAO-backed, no immediate mode, and
+`DrawMode.QUADS` is triangulated by Minecraft (the driver never sees
+`GL_QUADS`). When you move to your own VAO/VBO + GLSL, keep the same rules -
+they're enforced strictly on macOS:
 
 - No immediate mode (`glBegin/glEnd`), no fixed-function pipeline.
 - Always bind a VAO before drawing.
@@ -83,21 +93,34 @@ macOS:
 The reference shaders in `assets/distantlod/shaders/` show the distance-fade
 seam trick for later.
 
+## Known limitations
+
+- Singleplayer overworld only; the Nether/End and multiplayer aren't wired up.
+- Reads only **already-generated** terrain from disk; it doesn't generate new
+  far terrain that's never been explored.
+- Distant terrain color is a height-band placeholder, not the real surface
+  block color.
+- The renderer rebuilds all quads every frame via `Tessellator` - fine for a
+  proof of concept, not yet a scalable mesh/VBO cache.
+- No quadtree/frustum culling, no disk cache format of its own (it just reads
+  vanilla's region files directly each time).
+
 ## Roadmap
 
-1. **Week 1–2 (done):** render hook + far test quads.
-2. **Week 3–4:** capture loaded chunks into `LodChunkData` (heightmap + top
-   biome colour per column) on a background thread.
-3. **Week 5–6:** group chunks into region tiles; build coarse heightfield meshes
-   on an `ExecutorService` pool (never the main thread); handle load/unload.
-4. **Week 7–8:** swap to your own VAO/VBO + the GLSL here, add the distance-fade
-   blend zone, and persist the LOD cache to disk (`MappedByteBuffer` on APFS).
+1. **Done:** render hook proven safe on macOS; real heightmap+color capture
+   for loaded chunks; disk-backed reads for terrain beyond the loaded horizon.
+2. **Next:** convert cached `LodChunkData` into reusable mesh buffers (VBOs)
+   instead of rebuilding quads every frame.
+3. **Later:** real block-color decoding (section palettes) instead of height
+   bands; render sections / quadtree + frustum culling; distance-fade blend
+   zone using the shaders already in `assets/distantlod/shaders/`.
 
 ## Notes
 
-- Client-only mod (`"environment": "client"`), so it can join vanilla servers.
+- Client-only mod (`"environment": "client"`), so it can join vanilla servers
+  (the distant-disk feature simply does nothing there).
 - Version pins are in `gradle.properties`; bump them against
   <https://fabricmc.net/develop> when you upgrade.
-- When Mojang's Vulkan/MoltenVK switch lands, the renderer layer needs a rewrite
-  but the LOD **data** pipeline (capture → snapshot → mesh) carries over.
-```
+- Architectural reference (not copy-paste source) for where this is headed:
+  the real Distant Horizons project at
+  <https://gitlab.com/distant-horizons-team/distant-horizons>.
