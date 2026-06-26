@@ -53,12 +53,12 @@ public final class DistantLodStore {
     }
 
     /** Kicks off an async disk read for this chunk if one isn't already cached/pending/known-missing. */
-    public static void requestLoad(World world, Path saveRoot, int chunkX, int chunkZ) {
+    public static boolean requestLoad(World world, Path saveRoot, int chunkX, int chunkZ) {
         DistantChunkSource src = sourceFor(world, saveRoot);
         long requestEpoch = EPOCH.get();
         long key = ChunkPos.toLong(chunkX, chunkZ);
         if (CACHE.containsKey(key) || UNAVAILABLE.contains(key) || !PENDING.add(key)) {
-            return;
+            return false;
         }
 
         int worldBottomY = world.getBottomY();
@@ -85,6 +85,7 @@ public final class DistantLodStore {
                 PENDING.remove(key);
             }
         });
+        return true;
     }
 
     private static boolean isCurrentRequest(long requestEpoch, World world) {

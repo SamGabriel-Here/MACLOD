@@ -4,13 +4,15 @@ import com.example.distantlod.data.ChunkLodStore;
 import com.example.distantlod.data.DistantLodStore;
 import com.example.distantlod.data.LodChunkData;
 import com.mojang.blaze3d.systems.RenderSystem;
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.gl.ShaderProgram;
+import net.minecraft.client.gl.VertexBuffer;
 import net.minecraft.client.render.BufferBuilder;
 import net.minecraft.client.render.Camera;
 import net.minecraft.client.render.GameRenderer;
-import net.minecraft.client.render.Tessellator;
 import net.minecraft.client.render.VertexFormat;
 import net.minecraft.client.render.VertexFormats;
 import net.minecraft.client.util.math.MatrixStack;
@@ -25,26 +27,30 @@ import org.joml.Matrix4f;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Week 3-4 milestone: render a flat heightmap mesh built from real captured
- * chunk data ({@link ChunkLodStore}), proving the capture -> mesh -> render
- * pipeline end to end. Each loaded column becomes one flat quad at its
- * captured surface height, tinted with its captured map color, floated
- * {@link #DEBUG_HEIGHT_OFFSET} blocks above the terrain so it's visible
- * without fighting vanilla terrain in the depth buffer.
+ * Renders two proof-of-concept LOD layers:
  *
- * This intentionally still only covers chunks the client has already loaded
- * (no terrain beyond the normal horizon yet) and still draws through
- * Minecraft's own Tessellator + built-in position_color shader, for the same
- * macOS Core Profile safety reasons as the Week 1-2 test walls.
+ * <ul>
+ *   <li>a small translucent near overlay built from live loaded chunks, and</li>
+ *   <li>an opaque distant overlay built from singleplayer region files on disk.</li>
+ * </ul>
+ *
+ * The important milestone here is that per-chunk geometry is uploaded once into
+ * Minecraft {@link VertexBuffer}s and reused between frames. That keeps this
+ * macOS-friendly (Minecraft owns the GL objects) while avoiding the worst part
+ * of the first prototype: rebuilding every quad every frame.
  */
 public final class LodRenderer {
 
-    /** Cap how many chunk-rings around the camera we draw, to bound vertex count. */
+    /** Cap how many chunk-rings around the camera get the live debug overlay. */
     private static final int DEBUG_RENDER_RADIUS_CHUNKS = 3;
-    /** Lift the debug mesh well above eye level so it reads as a distinct overlay, not a wall at head height. */
+    /** Lift the debug mesh above the real terrain so it is visually distinct. */
     private static final float DEBUG_HEIGHT_OFFSET = 6.0f;
     /** Translucent so real terrain stays visible underneath. */
     private static final float DEBUG_ALPHA = 0.55f;
@@ -53,19 +59,21 @@ public final class LodRenderer {
     private static final int DISTANT_MIN_RADIUS_CHUNKS = 20;
     /** Additional chunks beyond vanilla render distance to read from disk. */
     private static final int DISTANT_EXTRA_CHUNKS = 4;
-    /** Safety cap while this prototype still rebuilds debug quads every frame. */
+    /** Safety cap while this prototype still uses one mesh per chunk. */
     private static final int DISTANT_MAX_RADIUS_CHUNKS = 36;
+    /** Avoid flooding the region-reader queue in one render tick. */
+    private static final int MAX_DISTANT_REQUESTS_PER_FRAME = 32;
     private static final float DISTANT_HEIGHT_OFFSET = 10.0f;
-    // Opaque, unlike the near debug ring: there's no real terrain underneath this
-    // to see through (vanilla never loads/renders it), so translucency just makes
-    // long sightlines over varied terrain stack hundreds of overlapping quads into
-    // a dense, washed-out haze instead of looking like solid ground.
     private static final float DISTANT_ALPHA = 1.0f;
+
+    private static final Map<Long, CachedChunkMesh> NEAR_MESHES = new ConcurrentHashMap<>();
+    private static final Map<Long, CachedChunkMesh> DISTANT_MESHES = new ConcurrentHashMap<>();
 
     private LodRenderer() {}
 
     public static void register() {
         WorldRenderEvents.AFTER_TRANSLUCENT.register(LodRenderer::onAfterTranslucent);
+        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> clearMeshes());
     }
 
     private static void onAfterTranslucent(WorldRenderContext context) {
@@ -78,17 +86,12 @@ public final class LodRenderer {
         int camChunkX = MathHelper.floor(cam.x) >> 4;
         int camChunkZ = MathHelper.floor(cam.z) >> 4;
 
-        List<LodChunkData> nearby = new ArrayList<>();
-        for (LodChunkData data : ChunkLodStore.snapshot().values()) {
-            if (Math.abs(data.chunkX() - camChunkX) <= DEBUG_RENDER_RADIUS_CHUNKS
-                    && Math.abs(data.chunkZ() - camChunkZ) <= DEBUG_RENDER_RADIUS_CHUNKS) {
-                nearby.add(data);
-            }
-        }
-
+        List<LodChunkData> nearby = collectNearby(camChunkX, camChunkZ);
         List<LodChunkData> distant = collectDistant(context, camChunkX, camChunkZ);
 
         if (nearby.isEmpty() && distant.isEmpty()) {
+            pruneMeshes(NEAR_MESHES, Set.of());
+            pruneMeshes(DISTANT_MESHES, Set.of());
             return;
         }
 
@@ -103,19 +106,13 @@ public final class LodRenderer {
         RenderSystem.setShaderFogEnd(100000.0f);
         RenderSystem.setShader(GameRenderer::getPositionColorProgram);
 
-        Tessellator tessellator = Tessellator.getInstance();
-        BufferBuilder buffer = tessellator.getBuffer();
-        buffer.begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_COLOR);
+        Matrix4f baseModelView = matrices.peek().getPositionMatrix();
+        Matrix4f projection = RenderSystem.getProjectionMatrix();
+        ShaderProgram shader = RenderSystem.getShader();
 
-        Matrix4f m = matrices.peek().getPositionMatrix();
-        for (LodChunkData data : nearby) {
-            addChunkQuads(buffer, m, cam, data, DEBUG_HEIGHT_OFFSET, DEBUG_ALPHA);
-        }
-        for (LodChunkData data : distant) {
-            addChunkQuads(buffer, m, cam, data, DISTANT_HEIGHT_OFFSET, DISTANT_ALPHA);
-        }
-
-        tessellator.draw();
+        renderMeshes(nearby, NEAR_MESHES, baseModelView, projection, shader, cam, DEBUG_HEIGHT_OFFSET, DEBUG_ALPHA);
+        renderMeshes(distant, DISTANT_MESHES, baseModelView, projection, shader, cam, DISTANT_HEIGHT_OFFSET, DISTANT_ALPHA);
+        VertexBuffer.unbind();
 
         RenderSystem.setShaderFogStart(prevFogStart);
         RenderSystem.setShaderFogEnd(prevFogEnd);
@@ -123,11 +120,20 @@ public final class LodRenderer {
         RenderSystem.enableCull();
     }
 
+    private static List<LodChunkData> collectNearby(int camChunkX, int camChunkZ) {
+        List<LodChunkData> nearby = new ArrayList<>();
+        for (LodChunkData data : ChunkLodStore.snapshot().values()) {
+            if (Math.abs(data.chunkX() - camChunkX) <= DEBUG_RENDER_RADIUS_CHUNKS
+                    && Math.abs(data.chunkZ() - camChunkZ) <= DEBUG_RENDER_RADIUS_CHUNKS) {
+                nearby.add(data);
+            }
+        }
+        return nearby;
+    }
+
     /**
-     * Collects already-cached disk-read chunks beyond the loaded horizon, and
-     * kicks off async loads for any in range that aren't cached yet. Singleplayer
-     * + overworld only: there's no save folder to read for a remote server, and
-     * other dimensions aren't wired up yet.
+     * Collects cached disk-read chunks beyond the loaded horizon and schedules a
+     * small number of new async reads each frame. Singleplayer overworld only.
      */
     private static List<LodChunkData> collectDistant(WorldRenderContext context, int camChunkX, int camChunkZ) {
         ClientWorld world = context.world();
@@ -145,9 +151,10 @@ public final class LodRenderer {
         int targetRadiusChunks = Math.max(DISTANT_MIN_RADIUS_CHUNKS, vanillaViewDistance + DISTANT_EXTRA_CHUNKS);
         int distantRadiusChunks = Math.min(targetRadiusChunks, DISTANT_MAX_RADIUS_CHUNKS);
         if (distantRadiusChunks <= loadedHorizonChunks) {
-            return List.of(); // render distance is already at/above this prototype's safety cap
+            return List.of();
         }
 
+        int requestsThisFrame = 0;
         List<LodChunkData> distant = new ArrayList<>();
         for (int dz = -distantRadiusChunks; dz <= distantRadiusChunks; dz++) {
             for (int dx = -distantRadiusChunks; dx <= distantRadiusChunks; dx++) {
@@ -160,42 +167,132 @@ public final class LodRenderer {
                 if (ChunkLodStore.snapshot().containsKey(key)) {
                     continue; // client already has live data for this one
                 }
+
                 LodChunkData data = DistantLodStore.getCached(key);
                 if (data != null) {
                     distant.add(data);
-                } else {
-                    DistantLodStore.requestLoad(world, saveRoot, cx, cz);
+                } else if (requestsThisFrame < MAX_DISTANT_REQUESTS_PER_FRAME
+                        && DistantLodStore.requestLoad(world, saveRoot, cx, cz)) {
+                    requestsThisFrame++;
                 }
             }
         }
         return distant;
     }
 
-    private static void addChunkQuads(BufferBuilder buf, Matrix4f m, Vec3d cam, LodChunkData data,
-                                       float heightOffset, float alpha) {
-        int baseX = data.chunkX() * LodChunkData.SIZE;
-        int baseZ = data.chunkZ() * LodChunkData.SIZE;
+    private static void renderMeshes(List<LodChunkData> dataList,
+                                     Map<Long, CachedChunkMesh> cache,
+                                     Matrix4f baseModelView,
+                                     Matrix4f projection,
+                                     ShaderProgram shader,
+                                     Vec3d cam,
+                                     float heightOffset,
+                                     float alpha) {
+        Set<Long> activeKeys = new HashSet<>();
+        for (LodChunkData data : dataList) {
+            long key = ChunkPos.toLong(data.chunkX(), data.chunkZ());
+            activeKeys.add(key);
 
-        for (int z = 0; z < LodChunkData.SIZE; z++) {
-            for (int x = 0; x < LodChunkData.SIZE; x++) {
-                int worldX = baseX + x;
-                int worldZ = baseZ + z;
-                float y = (float) (data.height(x, z) + heightOffset - cam.y);
-                float x0 = (float) (worldX - cam.x);
-                float x1 = (float) (worldX + 1 - cam.x);
-                float z0 = (float) (worldZ - cam.z);
-                float z1 = (float) (worldZ + 1 - cam.z);
-
-                int packed = data.color(x, z);
-                float r = ((packed >> 16) & 0xFF) / 255.0f;
-                float g = ((packed >> 8) & 0xFF) / 255.0f;
-                float b = (packed & 0xFF) / 255.0f;
-
-                buf.vertex(m, x0, y, z0).color(r, g, b, alpha).next();
-                buf.vertex(m, x1, y, z0).color(r, g, b, alpha).next();
-                buf.vertex(m, x1, y, z1).color(r, g, b, alpha).next();
-                buf.vertex(m, x0, y, z1).color(r, g, b, alpha).next();
+            CachedChunkMesh mesh = cache.get(key);
+            if (mesh == null || !mesh.matches(data, heightOffset, alpha)) {
+                if (mesh != null) {
+                    mesh.close();
+                }
+                mesh = CachedChunkMesh.build(data, heightOffset, alpha);
+                cache.put(key, mesh);
             }
+
+            Matrix4f modelView = new Matrix4f(baseModelView).translate(
+                    (float) (mesh.baseX() - cam.x),
+                    (float) (-cam.y),
+                    (float) (mesh.baseZ() - cam.z)
+            );
+            mesh.draw(modelView, projection, shader);
+        }
+        pruneMeshes(cache, activeKeys);
+    }
+
+    private static void pruneMeshes(Map<Long, CachedChunkMesh> cache, Set<Long> activeKeys) {
+        cache.entrySet().removeIf(entry -> {
+            if (activeKeys.contains(entry.getKey())) {
+                return false;
+            }
+            entry.getValue().close();
+            return true;
+        });
+    }
+
+    private static void clearMeshes() {
+        pruneMeshes(NEAR_MESHES, Set.of());
+        pruneMeshes(DISTANT_MESHES, Set.of());
+    }
+
+    private static final class CachedChunkMesh {
+        private static final Matrix4f IDENTITY = new Matrix4f();
+        private static final int BYTES_PER_VERTEX_ESTIMATE = 32;
+        private static final int VERTICES_PER_CHUNK = LodChunkData.SIZE * LodChunkData.SIZE * 4;
+
+        private final LodChunkData data;
+        private final float heightOffset;
+        private final float alpha;
+        private final VertexBuffer vertexBuffer;
+
+        private CachedChunkMesh(LodChunkData data, float heightOffset, float alpha, VertexBuffer vertexBuffer) {
+            this.data = data;
+            this.heightOffset = heightOffset;
+            this.alpha = alpha;
+            this.vertexBuffer = vertexBuffer;
+        }
+
+        static CachedChunkMesh build(LodChunkData data, float heightOffset, float alpha) {
+            BufferBuilder buffer = new BufferBuilder(VERTICES_PER_CHUNK * BYTES_PER_VERTEX_ESTIMATE);
+            buffer.begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_COLOR);
+
+            for (int z = 0; z < LodChunkData.SIZE; z++) {
+                for (int x = 0; x < LodChunkData.SIZE; x++) {
+                    float y = data.height(x, z) + heightOffset;
+                    float x0 = x;
+                    float x1 = x + 1;
+                    float z0 = z;
+                    float z1 = z + 1;
+
+                    int packed = data.color(x, z);
+                    float r = ((packed >> 16) & 0xFF) / 255.0f;
+                    float g = ((packed >> 8) & 0xFF) / 255.0f;
+                    float b = (packed & 0xFF) / 255.0f;
+
+                    buffer.vertex(IDENTITY, x0, y, z0).color(r, g, b, alpha).next();
+                    buffer.vertex(IDENTITY, x1, y, z0).color(r, g, b, alpha).next();
+                    buffer.vertex(IDENTITY, x1, y, z1).color(r, g, b, alpha).next();
+                    buffer.vertex(IDENTITY, x0, y, z1).color(r, g, b, alpha).next();
+                }
+            }
+
+            VertexBuffer vertexBuffer = new VertexBuffer(VertexBuffer.Usage.STATIC);
+            vertexBuffer.upload(buffer.end());
+            return new CachedChunkMesh(data, heightOffset, alpha, vertexBuffer);
+        }
+
+        boolean matches(LodChunkData otherData, float otherHeightOffset, float otherAlpha) {
+            return this.data == otherData
+                    && Float.compare(this.heightOffset, otherHeightOffset) == 0
+                    && Float.compare(this.alpha, otherAlpha) == 0;
+        }
+
+        int baseX() {
+            return data.chunkX() * LodChunkData.SIZE;
+        }
+
+        int baseZ() {
+            return data.chunkZ() * LodChunkData.SIZE;
+        }
+
+        void draw(Matrix4f modelView, Matrix4f projection, ShaderProgram shader) {
+            vertexBuffer.draw(modelView, projection, shader);
+        }
+
+        void close() {
+            vertexBuffer.close();
         }
     }
 }

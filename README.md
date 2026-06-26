@@ -4,11 +4,13 @@ A learning prototype of a Distant Horizons–style far-terrain renderer for
 Minecraft, built on **Fabric 1.20.1** and set up to run cleanly on **Apple
 Silicon macOS** (M-series).
 
-Current state: it renders a real heightmap mesh built from two sources -
+Current state: it renders real heightmap terrain built from two sources -
 captured live chunk data for whatever the client has loaded, and chunks read
 **directly off disk** from the singleplayer world save for terrain beyond the
-normal horizon. This is the first disk-backed far-terrain prototype, not just
-a render-pipeline test.
+normal horizon. The renderer now uploads per-chunk geometry into Minecraft
+`VertexBuffer`s and reuses those meshes between frames, so this is the first
+disk-backed + mesh-cached far-terrain prototype rather than just a render
+pipeline test.
 
 ## Prerequisites (macOS / Apple Silicon)
 
@@ -29,8 +31,9 @@ In-game: open a singleplayer **overworld** world. The near ring (chunks the
 client has actually loaded) renders immediately as a translucent colored
 heightfield floating a few blocks above the real terrain. The distant ring
 (read from disk, beyond vanilla's loaded chunks) renders opaque, height-banded
-colors, and fills in asynchronously over a second or two as background reads
-complete. It's easiest to see the distant ring clearly by lowering **Video
+colors, and fills in asynchronously as background reads complete. Disk read
+requests are throttled each frame so the game does not queue thousands of
+region-file reads at once. It's easiest to see the distant ring clearly by lowering **Video
 Settings → Render Distance** to ~2-4 chunks first, so vanilla's own horizon is
 small enough to leave a visible gap for the mod to fill.
 
@@ -43,7 +46,7 @@ distant-lod/
 ├── src/main/
 │   ├── java/com/example/distantlod/
 │   │   ├── DistantLodClient.java          # client entrypoint
-│   │   ├── render/LodRenderer.java        # renders both near + distant rings
+│   │   ├── render/LodRenderer.java        # cached VertexBuffer renderer for near + distant rings
 │   │   └── data/
 │   │       ├── LodChunkData.java          # compact per-chunk LOD snapshot
 │   │       ├── ChunkLodCapture.java       # near: real heightmap+color from a loaded chunk
@@ -74,6 +77,9 @@ work - so distant terrain is currently tinted by a height-band placeholder
 `DistantLodStore` runs those reads on a small background thread pool so disk
 I/O and NBT parsing never stall the render thread, with an epoch guard so
 stale results from a previous world/dimension are discarded after disconnect.
+`LodRenderer` then turns each `LodChunkData` into a cached Minecraft
+`VertexBuffer`; the cache is pruned as chunks leave the active LOD radius and
+cleared on disconnect.
 
 ## Why it runs on macOS
 
@@ -100,17 +106,18 @@ seam trick for later.
   far terrain that's never been explored.
 - Distant terrain color is a height-band placeholder, not the real surface
   block color.
-- The renderer rebuilds all quads every frame via `Tessellator` - fine for a
-  proof of concept, not yet a scalable mesh/VBO cache.
+- Meshes are now cached in `VertexBuffer`s, but still at one mesh per chunk;
+  there is no region/section batching yet.
 - No quadtree/frustum culling, no disk cache format of its own (it just reads
   vanilla's region files directly each time).
 
 ## Roadmap
 
 1. **Done:** render hook proven safe on macOS; real heightmap+color capture
-   for loaded chunks; disk-backed reads for terrain beyond the loaded horizon.
-2. **Next:** convert cached `LodChunkData` into reusable mesh buffers (VBOs)
-   instead of rebuilding quads every frame.
+   for loaded chunks; disk-backed reads for terrain beyond the loaded horizon;
+   per-chunk mesh caching with Minecraft `VertexBuffer`s.
+2. **Next:** batch chunks into larger render sections so the renderer draws
+   tens of meshes instead of hundreds/thousands of one-chunk meshes.
 3. **Later:** real block-color decoding (section palettes) instead of height
    bands; render sections / quadtree + frustum culling; distance-fade blend
    zone using the shaders already in `assets/distantlod/shaders/`.
