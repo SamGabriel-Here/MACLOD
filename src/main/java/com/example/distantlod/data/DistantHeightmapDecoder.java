@@ -66,16 +66,22 @@ public final class DistantHeightmapDecoder {
         return new LodChunkData(chunkX, chunkZ, heights, colors);
     }
 
-    /** Rough height-banded placeholder color, until real block-color decoding exists. */
+    /**
+     * High-contrast debug height bands, until real block-color decoding exists.
+     * These are intentionally artificial so the far LOD ring is easy to spot
+     * while testing the disk-read + mesh-cache pipeline.
+     */
     private static int bandColor(int y) {
-        if (y < 60) {
-            return 0xFF1E5FA8; // water / low ground
-        } else if (y < 90) {
-            return 0xFF3F8F3A; // plains/forest
-        } else if (y < 130) {
-            return 0xFF8A7A52; // hills
+        if (y < 58) {
+            return 0xFF00B7FF; // cyan: ocean / low ground
+        } else if (y < 85) {
+            return 0xFF43FF35; // neon green: low terrain
+        } else if (y < 120) {
+            return 0xFFFFD23A; // yellow/orange: hills
+        } else if (y < 160) {
+            return 0xFFFF4FD8; // magenta: high mountains
         } else {
-            return 0xFFD8D8D8; // mountains
+            return 0xFFFFFFFF; // white: peaks
         }
     }
 }

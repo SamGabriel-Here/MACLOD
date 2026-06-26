@@ -66,8 +66,8 @@ public final class LodRenderer {
     private static final int DISTANT_MAX_RADIUS_CHUNKS = 36;
     /** Avoid flooding the region-reader queue in one render tick. */
     private static final int MAX_DISTANT_REQUESTS_PER_FRAME = 32;
-    private static final float DISTANT_HEIGHT_OFFSET = 10.0f;
-    private static final float DISTANT_ALPHA = 1.0f;
+    private static final float DISTANT_HEIGHT_OFFSET = 18.0f;
+    private static final float DISTANT_ALPHA = 0.95f;
 
     private static final Map<Long, CachedChunkMesh> NEAR_MESHES = new ConcurrentHashMap<>();
     private static final Map<Long, CachedChunkMesh> DISTANT_MESHES = new ConcurrentHashMap<>();
