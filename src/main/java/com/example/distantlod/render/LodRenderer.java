@@ -142,7 +142,7 @@ public final class LodRenderer {
         }
 
         DebugStats stats = lastStats;
-        String line1 = "MACLOD 0.2.1: near=" + stats.nearChunks()
+        String line1 = "MACLOD 0.2.2: near=" + stats.nearChunks()
                 + " far=" + stats.distantChunks()
                 + " queued=" + stats.requestsQueued();
         String line2 = "meshes near=" + stats.nearMeshes()
@@ -281,9 +281,8 @@ public final class LodRenderer {
     private static final class CachedChunkMesh {
         private static final Matrix4f IDENTITY = new Matrix4f();
         private static final int BYTES_PER_VERTEX_ESTIMATE = 32;
-        /** Top faces + one vertical face for each internal E/S height transition. */
-        private static final int MAX_QUADS_PER_CHUNK = LodChunkData.SIZE * LodChunkData.SIZE
-                + (LodChunkData.SIZE - 1) * LodChunkData.SIZE * 2;
+        /** Surface-only for now; vertical transition faces made the prototype look like walls/ceilings. */
+        private static final int MAX_QUADS_PER_CHUNK = LodChunkData.SIZE * LodChunkData.SIZE;
         private static final int VERTICES_PER_CHUNK = MAX_QUADS_PER_CHUNK * 4;
 
         private final LodChunkData data;
@@ -308,20 +307,6 @@ public final class LodRenderer {
                     int packed = data.color(x, z);
 
                     addTopFace(buffer, x, z, y, packed, alpha);
-
-                    if (x < LodChunkData.SIZE - 1) {
-                        float eastY = data.height(x + 1, z) + heightOffset;
-                        if (Float.compare(y, eastY) != 0) {
-                            addVerticalFaceX(buffer, x + 1, z, Math.min(y, eastY), Math.max(y, eastY), packed, alpha);
-                        }
-                    }
-
-                    if (z < LodChunkData.SIZE - 1) {
-                        float southY = data.height(x, z + 1) + heightOffset;
-                        if (Float.compare(y, southY) != 0) {
-                            addVerticalFaceZ(buffer, x, z + 1, Math.min(y, southY), Math.max(y, southY), packed, alpha);
-                        }
-                    }
                 }
             }
 
@@ -343,26 +328,6 @@ public final class LodRenderer {
             buffer.vertex(IDENTITY, x0, y, z1).color(color.r(), color.g(), color.b(), alpha).next();
             buffer.vertex(IDENTITY, x1, y, z1).color(color.r(), color.g(), color.b(), alpha).next();
             buffer.vertex(IDENTITY, x1, y, z0).color(color.r(), color.g(), color.b(), alpha).next();
-        }
-
-        private static void addVerticalFaceX(BufferBuilder buffer, int x, int z, float y0, float y1, int packed, float alpha) {
-            Color color = Color.fromPacked(packed, 0.62f);
-            float z0 = z;
-            float z1 = z + 1;
-            buffer.vertex(IDENTITY, x, y1, z0).color(color.r(), color.g(), color.b(), alpha).next();
-            buffer.vertex(IDENTITY, x, y1, z1).color(color.r(), color.g(), color.b(), alpha).next();
-            buffer.vertex(IDENTITY, x, y0, z1).color(color.r(), color.g(), color.b(), alpha).next();
-            buffer.vertex(IDENTITY, x, y0, z0).color(color.r(), color.g(), color.b(), alpha).next();
-        }
-
-        private static void addVerticalFaceZ(BufferBuilder buffer, int x, int z, float y0, float y1, int packed, float alpha) {
-            Color color = Color.fromPacked(packed, 0.70f);
-            float x0 = x;
-            float x1 = x + 1;
-            buffer.vertex(IDENTITY, x0, y1, z).color(color.r(), color.g(), color.b(), alpha).next();
-            buffer.vertex(IDENTITY, x1, y1, z).color(color.r(), color.g(), color.b(), alpha).next();
-            buffer.vertex(IDENTITY, x1, y0, z).color(color.r(), color.g(), color.b(), alpha).next();
-            buffer.vertex(IDENTITY, x0, y0, z).color(color.r(), color.g(), color.b(), alpha).next();
         }
 
         private record Color(float r, float g, float b) {
