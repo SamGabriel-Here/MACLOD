@@ -8,12 +8,10 @@ import net.minecraft.util.math.MathHelper;
 /**
  * Decodes a chunk's saved {@code Heightmaps} NBT tag into a {@link LodChunkData}.
  *
- * Vanilla's heightmap storage already records *absolute* world Y (+1) per
- * column - see {@code Heightmap.trackUpdate}, which calls {@code set(x, z, y + 1)}
- * with the block's real world Y, not a chunk-relative offset. That means no
- * per-dimension bottom-Y correction is needed when reading it back: a stored
- * value of 0 means "no surface tracked in this column", and any other value
- * minus 1 is directly the surface block's world Y.
+ * Vanilla's saved heightmap stores Y relative to the dimension bottom:
+ * {@code stored = surfaceWorldY - bottomY + 1}. A stored value of 0 means
+ * "no tracked surface", otherwise the world-space surface height is
+ * {@code bottomY + stored - 1}.
  *
  * This does not yet decode actual block colors (that requires walking the
  * section block-state palettes, which is a separate, heavier piece of work).
@@ -52,7 +50,7 @@ public final class DistantHeightmapDecoder {
             for (int x = 0; x < size; x++) {
                 // Heightmap.toIndex(x, z) is x + z*16, not x*16 + z.
                 int raw = storage.get(z * size + x);
-                int height = raw - 1;
+                int height = raw == 0 ? worldBottomY - 1 : worldBottomY + raw - 1;
                 if (height < worldBottomY - 1 || height > worldBottomY + worldHeight) {
                     DistantLodClient.LOGGER.warn(
                             "[Distant LOD] distant chunk ({}, {}) col ({}, {}) out-of-range height {} (raw {})",

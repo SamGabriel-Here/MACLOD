@@ -66,7 +66,7 @@ public final class LodRenderer {
     private static final int DISTANT_MAX_RADIUS_CHUNKS = 36;
     /** Avoid flooding the region-reader queue in one render tick. */
     private static final int MAX_DISTANT_REQUESTS_PER_FRAME = 32;
-    private static final float DISTANT_HEIGHT_OFFSET = 18.0f;
+    private static final float DISTANT_HEIGHT_OFFSET = 4.0f;
     private static final float DISTANT_ALPHA = 0.95f;
 
     private static final Map<Long, CachedChunkMesh> NEAR_MESHES = new ConcurrentHashMap<>();
@@ -278,12 +278,10 @@ public final class LodRenderer {
     private static final class CachedChunkMesh {
         private static final Matrix4f IDENTITY = new Matrix4f();
         private static final int BYTES_PER_VERTEX_ESTIMATE = 32;
-        /** Top faces + one vertical face for each internal E/S height transition + one skirt per boundary column. */
+        /** Top faces + one vertical face for each internal E/S height transition. */
         private static final int MAX_QUADS_PER_CHUNK = LodChunkData.SIZE * LodChunkData.SIZE
-                + (LodChunkData.SIZE - 1) * LodChunkData.SIZE * 2
-                + LodChunkData.SIZE * 4;
+                + (LodChunkData.SIZE - 1) * LodChunkData.SIZE * 2;
         private static final int VERTICES_PER_CHUNK = MAX_QUADS_PER_CHUNK * 4;
-        private static final float BOUNDARY_SKIRT_DEPTH = 24.0f;
 
         private final LodChunkData data;
         private final float heightOffset;
@@ -313,11 +311,6 @@ public final class LodRenderer {
                         if (Float.compare(y, eastY) != 0) {
                             addVerticalFaceX(buffer, x + 1, z, Math.min(y, eastY), Math.max(y, eastY), packed, alpha);
                         }
-                    } else {
-                        addVerticalFaceX(buffer, x + 1, z, y - BOUNDARY_SKIRT_DEPTH, y, packed, alpha);
-                    }
-                    if (x == 0) {
-                        addVerticalFaceX(buffer, x, z, y - BOUNDARY_SKIRT_DEPTH, y, packed, alpha);
                     }
 
                     if (z < LodChunkData.SIZE - 1) {
@@ -325,11 +318,6 @@ public final class LodRenderer {
                         if (Float.compare(y, southY) != 0) {
                             addVerticalFaceZ(buffer, x, z + 1, Math.min(y, southY), Math.max(y, southY), packed, alpha);
                         }
-                    } else {
-                        addVerticalFaceZ(buffer, x, z + 1, y - BOUNDARY_SKIRT_DEPTH, y, packed, alpha);
-                    }
-                    if (z == 0) {
-                        addVerticalFaceZ(buffer, x, z, y - BOUNDARY_SKIRT_DEPTH, y, packed, alpha);
                     }
                 }
             }
