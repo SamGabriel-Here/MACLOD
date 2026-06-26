@@ -60,8 +60,10 @@ public final class LodRenderer {
 
     /** Minimum disk-read radius, in chunks, when vanilla render distance is low. */
     private static final int DISTANT_MIN_RADIUS_CHUNKS = 20;
+    /** Gap after vanilla render distance before far LOD starts, avoiding close overhead shells. */
+    private static final int DISTANT_GAP_CHUNKS = 4;
     /** Additional chunks beyond vanilla render distance to read from disk. */
-    private static final int DISTANT_EXTRA_CHUNKS = 4;
+    private static final int DISTANT_EXTRA_CHUNKS = 8;
     /** Safety cap while this prototype still uses one mesh per chunk. */
     private static final int DISTANT_MAX_RADIUS_CHUNKS = 36;
     /** Avoid flooding the region-reader queue in one render tick. */
@@ -112,7 +114,7 @@ public final class LodRenderer {
         float prevFogEnd = RenderSystem.getShaderFogEnd();
 
         RenderSystem.enableDepthTest();
-        RenderSystem.disableCull();
+        RenderSystem.enableCull();
         RenderSystem.enableBlend();
         RenderSystem.defaultBlendFunc();
         RenderSystem.setShaderFogStart(100000.0f);
@@ -183,9 +185,10 @@ public final class LodRenderer {
         Path saveRoot = server.getSavePath(WorldSavePath.ROOT);
         int vanillaViewDistance = client.options.getViewDistance().getValue();
         int loadedHorizonChunks = Math.max(DEBUG_RENDER_RADIUS_CHUNKS, vanillaViewDistance);
+        int skipHorizonChunks = loadedHorizonChunks + DISTANT_GAP_CHUNKS;
         int targetRadiusChunks = Math.max(DISTANT_MIN_RADIUS_CHUNKS, vanillaViewDistance + DISTANT_EXTRA_CHUNKS);
         int distantRadiusChunks = Math.min(targetRadiusChunks, DISTANT_MAX_RADIUS_CHUNKS);
-        if (distantRadiusChunks <= loadedHorizonChunks) {
+        if (distantRadiusChunks <= skipHorizonChunks) {
             return new DistantCollectResult(List.of(), 0, distantRadiusChunks, loadedHorizonChunks);
         }
 
@@ -193,8 +196,8 @@ public final class LodRenderer {
         List<LodChunkData> distant = new ArrayList<>();
         for (int dz = -distantRadiusChunks; dz <= distantRadiusChunks; dz++) {
             for (int dx = -distantRadiusChunks; dx <= distantRadiusChunks; dx++) {
-                if (Math.abs(dx) <= loadedHorizonChunks && Math.abs(dz) <= loadedHorizonChunks) {
-                    continue; // leave vanilla-loaded terrain to Minecraft / the near debug overlay
+                if (Math.abs(dx) <= skipHorizonChunks && Math.abs(dz) <= skipHorizonChunks) {
+                    continue; // leave vanilla-loaded terrain plus a small gap to Minecraft
                 }
                 int cx = camChunkX + dx;
                 int cz = camChunkZ + dz;
@@ -334,10 +337,12 @@ public final class LodRenderer {
             float x1 = x + 1;
             float z0 = z;
             float z1 = z + 1;
+            // Wound upward. With culling enabled, this prevents the LOD surface
+            // from becoming a giant visible ceiling when the camera is below it.
             buffer.vertex(IDENTITY, x0, y, z0).color(color.r(), color.g(), color.b(), alpha).next();
-            buffer.vertex(IDENTITY, x1, y, z0).color(color.r(), color.g(), color.b(), alpha).next();
-            buffer.vertex(IDENTITY, x1, y, z1).color(color.r(), color.g(), color.b(), alpha).next();
             buffer.vertex(IDENTITY, x0, y, z1).color(color.r(), color.g(), color.b(), alpha).next();
+            buffer.vertex(IDENTITY, x1, y, z1).color(color.r(), color.g(), color.b(), alpha).next();
+            buffer.vertex(IDENTITY, x1, y, z0).color(color.r(), color.g(), color.b(), alpha).next();
         }
 
         private static void addVerticalFaceX(BufferBuilder buffer, int x, int z, float y0, float y1, int packed, float alpha) {
