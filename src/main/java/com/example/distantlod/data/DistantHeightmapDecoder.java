@@ -13,9 +13,9 @@ import net.minecraft.util.math.MathHelper;
  * "no tracked surface", otherwise the world-space surface height is
  * {@code bottomY + stored - 1}.
  *
- * This does not yet decode actual block colors (that requires walking the
- * section block-state palettes, which is a separate, heavier piece of work).
- * Color is a placeholder height band until that's added.
+ * Color comes from {@link DistantBlockColorDecoder}'s real per-column surface
+ * block lookup where that succeeds; the height band in {@link #bandColor} is
+ * only a fallback for columns it can't resolve (e.g. a missing section).
  */
 public final class DistantHeightmapDecoder {
 
@@ -61,25 +61,54 @@ public final class DistantHeightmapDecoder {
             }
         }
 
+        DistantBlockColorDecoder.decorateColors(root, heights, colors);
+
         return new LodChunkData(chunkX, chunkZ, heights, colors);
     }
 
     /**
-     * High-contrast debug height bands, until real block-color decoding exists.
-     * These are intentionally artificial so the far LOD ring is easy to spot
-     * while testing the disk-read + mesh-cache pipeline.
+     * Debug height coloring, until real block-color decoding exists. The
+     * previous version used flat bands across wide height ranges (e.g. one
+     * solid color for all of y=85..120), so ordinary hills - whose real
+     * height varies a lot within one band - visually collapsed into a single
+     * uniform sheet with zero shading. Interpolating continuously between
+     * anchor colors means adjacent columns at different heights always look
+     * at least a little different, so slopes actually read as terrain.
      */
+    private static final int[] HEIGHTS = {-64, 58, 85, 120, 160, 200, 320};
+    private static final int[] COLORS = {
+            0xFF0D3B66, // deep water
+            0xFF1E90AA, // shallow water / shoreline
+            0xFF3FAA35, // lowland green
+            0xFFC9A227, // hills (tan/gold)
+            0xFFA85C2E, // highlands (rust/brown)
+            0xFFD8D8D8, // peaks (light gray)
+            0xFFFFFFFF, // snow caps
+    };
+
     private static int bandColor(int y) {
-        if (y < 58) {
-            return 0xFF00B7FF; // cyan: ocean / low ground
-        } else if (y < 85) {
-            return 0xFF43FF35; // neon green: low terrain
-        } else if (y < 120) {
-            return 0xFFFFD23A; // yellow/orange: hills
-        } else if (y < 160) {
-            return 0xFFFF4FD8; // magenta: high mountains
-        } else {
-            return 0xFFFFFFFF; // white: peaks
+        if (y <= HEIGHTS[0]) {
+            return COLORS[0];
         }
+        for (int i = 1; i < HEIGHTS.length; i++) {
+            if (y <= HEIGHTS[i]) {
+                float t = (float) (y - HEIGHTS[i - 1]) / (HEIGHTS[i] - HEIGHTS[i - 1]);
+                return lerpColor(COLORS[i - 1], COLORS[i], t);
+            }
+        }
+        return COLORS[COLORS.length - 1];
+    }
+
+    private static int lerpColor(int from, int to, float t) {
+        int r = lerpChannel(from, to, t, 16);
+        int g = lerpChannel(from, to, t, 8);
+        int b = lerpChannel(from, to, t, 0);
+        return 0xFF000000 | (r << 16) | (g << 8) | b;
+    }
+
+    private static int lerpChannel(int from, int to, float t, int shift) {
+        int a = (from >> shift) & 0xFF;
+        int b = (to >> shift) & 0xFF;
+        return a + Math.round((b - a) * t);
     }
 }

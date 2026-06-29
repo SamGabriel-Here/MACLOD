@@ -305,8 +305,9 @@ public final class LodRenderer {
                 for (int x = 0; x < LodChunkData.SIZE; x++) {
                     float y = data.height(x, z) + heightOffset;
                     int packed = data.color(x, z);
+                    float shade = slopeShade(data, x, z);
 
-                    addTopFace(buffer, x, z, y, packed, alpha);
+                    addTopFace(buffer, x, z, y, packed, alpha, shade);
                 }
             }
 
@@ -316,8 +317,27 @@ public final class LodRenderer {
         }
 
 
-        private static void addTopFace(BufferBuilder buffer, int x, int z, float y, int packed, float alpha) {
-            Color color = Color.fromPacked(packed, 1.0f);
+        /**
+         * Cheap fake normal/AO: darkens columns on steeper local slopes so
+         * ridges and valleys stay visible even where the placeholder height
+         * band color is flat across a wide real-height range. Only looks at
+         * neighbors within this chunk; chunk edges fall back to zero slope,
+         * which is a minor seam but much better than no shading at all.
+         */
+        private static float slopeShade(LodChunkData data, int x, int z) {
+            int size = LodChunkData.SIZE;
+            int hC = data.height(x, z);
+            int hX0 = x > 0 ? data.height(x - 1, z) : hC;
+            int hX1 = x < size - 1 ? data.height(x + 1, z) : hC;
+            int hZ0 = z > 0 ? data.height(x, z - 1) : hC;
+            int hZ1 = z < size - 1 ? data.height(x, z + 1) : hC;
+
+            float slope = (Math.abs(hX1 - hX0) + Math.abs(hZ1 - hZ0)) / 2.0f;
+            return MathHelper.clamp(1.0f - slope * 0.05f, 0.55f, 1.15f);
+        }
+
+        private static void addTopFace(BufferBuilder buffer, int x, int z, float y, int packed, float alpha, float shade) {
+            Color color = Color.fromPacked(packed, shade);
             float x0 = x;
             float x1 = x + 1;
             float z0 = z;
